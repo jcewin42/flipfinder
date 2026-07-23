@@ -1,0 +1,23 @@
+# Install: sudo cp deploy/flipfinder.service /etc/systemd/system/
+#          sudo systemctl daemon-reload
+#          sudo systemctl enable --now flipfinder
+# Logs:    journalctl -u flipfinder -f   (also see logs/flipfinder.log either way)
+#
+# Adjust User/WorkingDirectory/ExecStart to match your actual username and
+# where you cloned the repo. Assumes a venv at <repo>/venv (see README setup).
+[Unit]
+Description=flipfinder marketplace monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/flipfinder
+EnvironmentFile=/home/pi/flipfinder/.env
+ExecStart=/home/pi/flipfinder/venv/bin/python -m flipfinder.main
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

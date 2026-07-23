@@ -1,5 +1,7 @@
 # flipfinder
 
+> Ready to actually deploy and test this on real devices? Start with `HANDOFF.md` instead of this file -- it has the phased rollout plan and the list of things that are still unverified against real services.
+
 Notifies you about flip-worthy Marketplace listings, filters out the noise,
 estimates resale value, repair cost, and repair time, tells you what to
 offer and what $/hour you can expect to make, and learns from your feedback
@@ -60,6 +62,8 @@ pip install -r requirements.txt
 cp config.example.yaml config.yaml
 cp .env.example .env
 ```
+
+For always-on operation without Docker, see `deploy/flipfinder.service` (systemd unit -- copy to `/etc/systemd/system/`, adjust the user/paths, `systemctl enable --now flipfinder`).
 
 ### Option B: Docker (Pi side only)
 
