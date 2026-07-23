@@ -1,0 +1,11 @@
+.env
+config.yaml
+data/
+logs/
+*.db
+__pycache__/
+*.pyc
+venv/
+.git/
+jetson_service/
+tests/

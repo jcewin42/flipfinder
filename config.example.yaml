@@ -1,0 +1,93 @@
+database:
+  path: "data/flipfinder.db"
+
+discord:
+  bot_token: "${DISCORD_BOT_TOKEN}"
+  channel_id: 123456789012345678   # right-click the channel in Discord (dev mode on) -> Copy Channel ID
+
+inference:
+  backend: "jetson"   # "jetson" for the real thing, "mock" to dry-run the pipeline without it
+  jetson:
+    base_url: "http://192.168.1.50:8000"   # Jetson's LAN IP + jetson_service port
+  mock: {}
+
+# Real, traffic-aware routing (Google Routes API) or the free straight-line
+# fallback. Only called for listings that already passed stage 1, so the
+# paid option is affordable even at hobby volume -- see the README.
+#
+# THIS is the on/off switch for paid routing: set backend to "haversine" to
+# use only the free estimate (no Google API calls at all, ever), or
+# "google_routes" to use the real thing. There's no separate boolean needed.
+routing:
+  backend: "haversine"   # "haversine" (free, no traffic) or "google_routes" (paid, real + traffic-aware)
+  travel_time_basis: "peak"   # "peak" | "offpeak" | "average" -- which one drives the $/hour math (both are still shown)
+  log_comparison: false    # TEMPORARY diagnostic flag -- see flipfinder/routing/temp_comparison_logger.py.
+                            # When true, logs haversine vs Google side by side on every listing REGARDLESS of
+                            # which backend above is active, so you can judge haversine's accuracy before
+                            # committing either way. Requires google_routes.api_key below even if backend: haversine.
+                            # Costs real Google API calls once enabled -- delete this whole feature when you're done comparing.
+  haversine:
+    avg_speed_kmh: 55
+  google_routes:
+    api_key: "${GOOGLE_ROUTES_API_KEY}"
+    peak_time: "08:00"      # representative peak-traffic departure (local time) -- or just set this to
+                            # YOUR actual typical pickup time if it's consistent (e.g. "18:00" right after
+                            # work, or "10:00" for weekend pickups) rather than treating it as literally "rush hour"
+    offpeak_time: "14:00"   # representative off-peak departure
+    weekday_only: true       # set false if you actually do pickups on weekends
+    compute_both: true       # false = only compute travel_time_basis's side (halves API calls -- see README)
+    avg_speed_kmh_fallback: 55   # used if a Google Routes call fails and it falls back to haversine
+
+sources:
+  sociavault:
+    api_key: "${SOCIAVAULT_API_KEY}"
+    cost_per_search_call: 0.01    # adjust to your actual plan's per-request cost
+    cost_per_detail_call: 0.01
+
+# Resolve this once by hand (e.g. right-click your area on Google Maps ->
+# "What's here?") -- not worth spending API credits on a lookup you only
+# need once.
+location:
+  latitude: 0.0
+  longitude: 0.0
+  radius_km: 40
+  max_distance_km: 60        # global cap; a category can override this
+
+categories:
+  outboard_motors:
+    source: sociavault
+    search_strategy: broad        # "broad" = 1 search/poll, "thorough" = 1 per brand (~11x search credits)
+    base_service_cost: 150        # your standard service, applied to every unit
+    base_service_hours: 1.5       # time your standard service takes
+    selling_overhead_hours: 0.5   # photographing/listing/answering messages
+    price_min: 50
+    price_max: 6000
+    max_distance_km: 60           # overrides the global default above if set
+    min_profit_flat: 75           # floor profit target in $
+    min_profit_pct: 0.20          # or 20% of resale value, whichever is bigger
+    alert_min_hourly_rate: 20     # $/hour -- only alert above this
+    # travel_time_basis: "peak"   # per-category override of the global routing.travel_time_basis
+
+    # Delisting detection: periodic get_detail()-based rechecks of listings
+    # that passed stage 1 (NOT every raw search hit -- see README). Each
+    # check schedules the next one with backoff; tracking stops after
+    # max_tracking_days either way. Set enabled: false to turn this off
+    # entirely (no rechecks, no API calls for it, no time-on-market stats).
+    lifecycle_tracking:
+      enabled: true
+      first_check_delay_days: 1
+      recheck_backoff_days: [1, 2, 4, 7, 14]
+      max_tracking_days: 45
+      max_checks_per_poll: 10      # caps API spend on rechecks regardless of backlog size
+
+    schedule:
+      mode: interval              # or "fixed_times"
+      interval_minutes: 45
+      window_start: "07:00"
+      window_end: "22:00"
+      # fixed_times: ["07:00", "12:30", "18:00"]   # used only if mode: fixed_times
+
+  # snowblowers:
+  #   source: sociavault
+  #   base_service_cost: 60
+  #   ...same shape as above...
