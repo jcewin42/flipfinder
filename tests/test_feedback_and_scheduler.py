@@ -13,13 +13,13 @@ def test_find_similar_ranks_closer_features_first():
         store = FeedbackStore(db)
 
         store.record(FeedbackEntry(
-            listing_id="a", category_id="outboard_motors",
+            listing_id="a", source="sociavault", category_id="outboard_motors",
             features={"brand": "yamaha", "hp": 40, "year": 2015},
             predicted_repair_cost=50, predicted_resale_value=700,
             actual_repair_cost=80, actual_resale_value=650, was_purchased=True,
         ))
         store.record(FeedbackEntry(
-            listing_id="b", category_id="outboard_motors",
+            listing_id="b", source="sociavault", category_id="outboard_motors",
             features={"brand": "mercury", "hp": 150, "year": 2005},
             predicted_repair_cost=100, predicted_resale_value=2000,
             actual_repair_cost=300, actual_resale_value=1800, was_purchased=True,

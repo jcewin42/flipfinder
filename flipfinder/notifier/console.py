@@ -12,16 +12,25 @@ from flipfinder.models import ListingDetail, Offer, ValuationEstimate
 
 
 class ConsoleNotifier:
-    async def send_alert(self, detail: ListingDetail, estimate: ValuationEstimate, offer: Offer) -> None:
+    async def send_alert(
+        self, detail: ListingDetail, estimate: ValuationEstimate, offer: Offer, needs_confirmation: bool = False,
+    ) -> None:
         peak = f"{offer.pickup_travel_hours_peak:.1f}h" if offer.pickup_travel_hours_peak is not None else "unknown"
         offpeak = f"{offer.pickup_travel_hours_offpeak:.1f}h" if offer.pickup_travel_hours_offpeak is not None else "unknown"
         routing = "real traffic-aware" if offer.traffic_aware else "straight-line estimate"
         print("=" * 70)
         print(f"{detail.title}  (id={detail.id})")
         print(f"  {detail.url}")
+        if needs_confirmation:
+            print(
+                f"  *** NOT SURE ABOUT UNIT COUNT: assumed {estimate.estimated_item_count} "
+                f"({estimate.item_count_confidence:.0%} confident) -- please verify ***"
+            )
         if estimate.estimated_item_count > 1:
             print(f"  *** listing includes ~{estimate.estimated_item_count} motors -- figures below are TOTALS ***")
         print(f"  asking: ${detail.price}   est. resale: ${estimate.estimated_resale_value:,.0f}")
+        if detail.photos:
+            print(f"  photos ({len(detail.photos)}): " + ", ".join(p.url for p in detail.photos[:5]))
         print(f"  est. extra repair: ${estimate.estimated_repair_cost:,.0f} / {estimate.estimated_repair_hours:.1f}h")
         print(f"  suggested max offer: ${offer.max_offer:,.0f}")
         print(f"  profit at asking: ${offer.profit_if_bought_at_asking:,.0f}")

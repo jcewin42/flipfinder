@@ -61,3 +61,23 @@ def test_passes_stage1_fails_open_when_distance_unknown():
     # No coordinates available for this listing -- don't silently drop a
     # possibly-good listing just because distance couldn't be computed.
     assert passes_stage1(summary, profile, distance_km=None, max_distance_km=60) is True
+
+
+def test_passes_stage1_ignores_photo_by_default():
+    profile = _profile()
+    summary = _summary("Yamaha 40hp outboard, runs great")
+    assert summary.thumbnail_url is None
+    assert passes_stage1(summary, profile) is True  # require_photo defaults False
+
+
+def test_passes_stage1_rejects_no_photo_when_required():
+    profile = _profile()
+    summary = _summary("Yamaha 40hp outboard, runs great")
+    assert passes_stage1(summary, profile, require_photo=True) is False
+
+
+def test_passes_stage1_accepts_with_photo_when_required():
+    profile = _profile()
+    summary = _summary("Yamaha 40hp outboard, runs great")
+    summary.thumbnail_url = "http://example.com/thumb.jpg"
+    assert passes_stage1(summary, profile, require_photo=True) is True

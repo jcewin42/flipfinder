@@ -89,6 +89,7 @@ class ValuationEstimate:
     confidence: float             # 0.0-1.0, the model's/heuristic's self-reported confidence
     reasoning: str                 # short free-text explanation, shown to the user
     estimated_item_count: int = 1   # how many distinct motors this listing appears to include
+    item_count_confidence: float = 1.0   # separate from `confidence` -- specifically about the unit-count judgment
     raw_response: str = ""          # unparsed model output, kept for debugging/audit
 
 
@@ -114,8 +115,15 @@ class FeedbackEntry:
     A piece of ground truth the user has supplied after the fact: what they
     actually spent servicing an item and/or what they actually sold it for.
     This is the raw material the learning loop uses to get more accurate.
+
+    One row per (listing_id, source) -- see db.py's upsert behavior. Fields
+    trickle in over time (item count confirmed today, repair cost next
+    week, resale value a month later) and accumulate into one coherent
+    record rather than fragmenting into multiple partial rows, since a
+    single complete comp is what actually makes retrieval useful.
     """
     listing_id: str
+    source: str
     category_id: str
     features: dict                 # category_profile.feature_vector() output, stored for similarity search
     predicted_repair_cost: Optional[float]
@@ -123,5 +131,10 @@ class FeedbackEntry:
     actual_repair_cost: Optional[float]
     actual_resale_value: Optional[float]
     was_purchased: Optional[bool]
+    predicted_item_count: Optional[int] = None   # what the AI guessed, when uncertain enough to ask
+    actual_item_count: Optional[int] = None       # what you confirmed it actually was
+    condition_at_sale: Optional[str] = None       # e.g. "serviced and running", "as-is, not serviced", "parts only" --
+                                                    # without this, actual_resale_value is ambiguous ground truth,
+                                                    # since estimated_resale_value always assumes full service was done
     notes: str = ""
     created_at: Optional[datetime] = None

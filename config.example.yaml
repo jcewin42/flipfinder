@@ -63,9 +63,16 @@ categories:
     price_min: 50
     price_max: 6000
     max_distance_km: 60           # overrides the global default above if set
+    image_count: 3                 # photos sent to the inference backend per valuation --
+                                     # more context vs. more Jetson inference cost/latency
+    require_photo: false            # reject listings with no thumbnail at stage 1 (free check, but
+                                     # UNVERIFIED against real SociaVault behavior -- watch stage1
+                                     # reject logs before trusting this; easy to flip back off
     min_profit_flat: 75           # floor profit target in $
     min_profit_pct: 0.20          # or 20% of resale value, whichever is bigger
     alert_min_hourly_rate: 20     # $/hour -- only alert above this
+    item_count_confidence_threshold: 0.6   # below this, always alert regardless of hourly rate --
+                                             # an uncertain unit count could be hiding a much better deal
     # travel_time_basis: "peak"   # per-category override of the global routing.travel_time_basis
 
     # Delisting detection: periodic get_detail()-based rechecks of listings

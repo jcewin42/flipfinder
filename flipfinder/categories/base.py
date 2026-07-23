@@ -34,6 +34,8 @@ class CategoryProfile(ABC):
     category_id: str
     base_service_cost: float
     base_service_hours: float   # fixed labor time for your standard service, mirrors base_service_cost
+    image_count: int = 3         # how many photos to send to the inference backend per valuation --
+                                   # more context per listing vs. more Jetson inference cost/latency
 
     @abstractmethod
     def search_specs(self) -> Sequence[SearchSpec]:

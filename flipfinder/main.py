@@ -33,7 +33,7 @@ from flipfinder.db import Database
 from flipfinder.inference import build_backend
 from flipfinder.logging_config import setup_logging
 from flipfinder.notifier.console import ConsoleNotifier
-from flipfinder.pipeline import compute_offer, evaluate_listing
+from flipfinder.pipeline import compute_offer, evaluate_listing, should_alert
 from flipfinder.pipeline import market_stats as market_stats_mod
 from flipfinder.pipeline.feedback_store import FeedbackStore
 from flipfinder.pipeline.stage1_filter import passes_stage1
@@ -74,6 +74,7 @@ def build_app(config: dict):
             price_min=cat_cfg.get("price_min", 50),
             price_max=cat_cfg.get("price_max", 6000),
             search_strategy=cat_cfg.get("search_strategy", "broad"),
+            image_count=cat_cfg.get("image_count", 3),
         )
         schedules[category_id] = ScheduleConfig(**cat_cfg["schedule"])
 
@@ -107,7 +108,9 @@ async def run_poll_cycle(
     source = sources[cat_cfg["source"]]
 
     min_hourly_rate = cat_cfg.get("alert_min_hourly_rate", 20.0)
+    item_count_confidence_threshold = cat_cfg.get("item_count_confidence_threshold", 0.6)
     max_distance_km = cat_cfg.get("max_distance_km", location.get("max_distance_km"))
+    require_photo = cat_cfg.get("require_photo", False)
     travel_time_basis = cat_cfg.get("travel_time_basis", config.get("routing", {}).get("travel_time_basis", "peak"))
     selling_overhead_hours = cat_cfg.get("selling_overhead_hours", 0.5)
 
@@ -143,7 +146,7 @@ async def run_poll_cycle(
                             location["latitude"], location["longitude"], summary.latitude, summary.longitude,
                         )
 
-                    passed = passes_stage1(summary, category, distance_km, max_distance_km)
+                    passed = passes_stage1(summary, category, distance_km, max_distance_km, require_photo)
                     db.mark_processed(
                         summary.id, source.name, category.category_id, summary.title,
                         summary.price, summary.url, passed,
@@ -202,8 +205,12 @@ async def run_poll_cycle(
                         f" [{estimate.estimated_item_count} units]" if estimate.estimated_item_count > 1 else "",
                     )
 
-                    if offer.estimated_hourly_rate >= min_hourly_rate and estimate.confidence > 0:
-                        await notifier.send_alert(detail, estimate, offer)
+                    if should_alert(
+                        offer.estimated_hourly_rate, estimate.confidence, estimate.item_count_confidence,
+                        min_hourly_rate, item_count_confidence_threshold,
+                    ):
+                        needs_confirmation = estimate.item_count_confidence < item_count_confidence_threshold
+                        await notifier.send_alert(detail, estimate, offer, needs_confirmation)
                         counts["alerts_sent"] += 1
 
                 cursor = result.next_cursor

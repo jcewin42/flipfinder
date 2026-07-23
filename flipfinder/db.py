@@ -85,8 +85,8 @@ CREATE TABLE IF NOT EXISTS estimates (
 );
 
 CREATE TABLE IF NOT EXISTS feedback (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
     listing_id TEXT NOT NULL,
+    source TEXT NOT NULL,
     category_id TEXT NOT NULL,
     features TEXT NOT NULL,           -- JSON blob
     predicted_repair_cost REAL,
@@ -94,8 +94,13 @@ CREATE TABLE IF NOT EXISTS feedback (
     actual_repair_cost REAL,
     actual_resale_value REAL,
     was_purchased INTEGER,
+    predicted_item_count INTEGER,
+    actual_item_count INTEGER,
+    condition_at_sale TEXT,
     notes TEXT,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (listing_id, source)
 );
 
 CREATE TABLE IF NOT EXISTS poll_log (
@@ -299,6 +304,7 @@ class Database:
     def record_feedback(
         self,
         listing_id: str,
+        source: str,
         category_id: str,
         features: dict,
         predicted_repair_cost: Optional[float],
@@ -306,18 +312,52 @@ class Database:
         actual_repair_cost: Optional[float],
         actual_resale_value: Optional[float],
         was_purchased: Optional[bool],
+        predicted_item_count: Optional[int] = None,
+        actual_item_count: Optional[int] = None,
+        condition_at_sale: Optional[str] = None,
         notes: str = "",
     ) -> None:
+        """
+        Upsert: one row per (listing_id, source). Feedback trickles in over
+        time (item count confirmed today, repair cost next week, resale
+        value a month later) -- actual/outcome fields are only overwritten
+        when THIS call actually provides a new value (via COALESCE), so an
+        earlier call's data isn't clobbered with None by a later, unrelated
+        call. predicted_* / features / category_id are written plainly
+        since they should be identical on every call anyway (they come from
+        the immutable original estimate). notes accumulate rather than
+        overwrite, since they're free-form remarks added over time.
+        """
+        now = now_iso()
         with self._connect() as conn:
             conn.execute(
                 """INSERT INTO feedback
-                   (listing_id, category_id, features, predicted_repair_cost,
+                   (listing_id, source, category_id, features, predicted_repair_cost,
                     predicted_resale_value, actual_repair_cost, actual_resale_value,
-                    was_purchased, notes, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (listing_id, category_id, json.dumps(features), predicted_repair_cost,
+                    was_purchased, predicted_item_count, actual_item_count,
+                    condition_at_sale, notes, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(listing_id, source) DO UPDATE SET
+                       category_id = excluded.category_id,
+                       features = excluded.features,
+                       predicted_repair_cost = excluded.predicted_repair_cost,
+                       predicted_resale_value = excluded.predicted_resale_value,
+                       actual_repair_cost = COALESCE(excluded.actual_repair_cost, feedback.actual_repair_cost),
+                       actual_resale_value = COALESCE(excluded.actual_resale_value, feedback.actual_resale_value),
+                       was_purchased = COALESCE(excluded.was_purchased, feedback.was_purchased),
+                       predicted_item_count = excluded.predicted_item_count,
+                       actual_item_count = COALESCE(excluded.actual_item_count, feedback.actual_item_count),
+                       condition_at_sale = COALESCE(excluded.condition_at_sale, feedback.condition_at_sale),
+                       notes = CASE
+                           WHEN feedback.notes IS NULL OR feedback.notes = '' THEN excluded.notes
+                           WHEN excluded.notes IS NULL OR excluded.notes = '' THEN feedback.notes
+                           ELSE feedback.notes || ' | ' || excluded.notes
+                       END,
+                       updated_at = excluded.updated_at""",
+                (listing_id, source, category_id, json.dumps(features), predicted_repair_cost,
                  predicted_resale_value, actual_repair_cost, actual_resale_value,
-                 None if was_purchased is None else int(was_purchased), notes, now_iso()),
+                 None if was_purchased is None else int(was_purchased),
+                 predicted_item_count, actual_item_count, condition_at_sale, notes, now, now),
             )
 
     def get_feedback_for_category(self, category_id: str) -> list[dict]:

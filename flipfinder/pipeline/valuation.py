@@ -29,6 +29,6 @@ def evaluate_listing(
     similar_feedback = feedback_store.find_similar(category.category_id, features, k=feedback_k)
     stats = market_stats_mod.get_time_on_market_stats(db, category.category_id, detail.price)
     prompt = category.build_valuation_prompt(detail, similar_feedback, market_stats=stats)
-    image_urls = [p.url for p in detail.photos[:3]]  # keep the request cheap; a few photos is plenty of context
+    image_urls = [p.url for p in detail.photos[:category.image_count]]
     raw_response = inference_backend.evaluate(prompt, image_urls=image_urls)
     return category.parse_valuation_response(raw_response)

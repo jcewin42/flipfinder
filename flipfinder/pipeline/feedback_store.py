@@ -48,6 +48,7 @@ class FeedbackStore:
     def record(self, entry: FeedbackEntry) -> None:
         self.db.record_feedback(
             listing_id=entry.listing_id,
+            source=entry.source,
             category_id=entry.category_id,
             features=entry.features,
             predicted_repair_cost=entry.predicted_repair_cost,
@@ -55,18 +56,29 @@ class FeedbackStore:
             actual_repair_cost=entry.actual_repair_cost,
             actual_resale_value=entry.actual_resale_value,
             was_purchased=entry.was_purchased,
+            predicted_item_count=entry.predicted_item_count,
+            actual_item_count=entry.actual_item_count,
+            condition_at_sale=entry.condition_at_sale,
             notes=entry.notes,
         )
 
     def find_similar(self, category_id: str, features: dict, k: int = 5) -> list[FeedbackEntry]:
         rows = self.db.get_feedback_for_category(category_id)
-        # Only feedback with an actual outcome is useful as a correction example.
-        rows = [r for r in rows if r["actual_repair_cost"] is not None or r["actual_resale_value"] is not None]
+        # Any actual outcome is useful as a correction example -- including a
+        # bare item-count confirmation with no $ outcome yet, since that's
+        # exactly what calibrates future item_count_confidence judgment.
+        rows = [
+            r for r in rows
+            if r["actual_repair_cost"] is not None
+            or r["actual_resale_value"] is not None
+            or r.get("actual_item_count") is not None
+        ]
         rows.sort(key=lambda r: _feature_distance(features, r["features"]))
         top = rows[:k]
         return [
             FeedbackEntry(
                 listing_id=r["listing_id"],
+                source=r["source"],
                 category_id=r["category_id"],
                 features=r["features"],
                 predicted_repair_cost=r["predicted_repair_cost"],
@@ -74,6 +86,9 @@ class FeedbackStore:
                 actual_repair_cost=r["actual_repair_cost"],
                 actual_resale_value=r["actual_resale_value"],
                 was_purchased=bool(r["was_purchased"]) if r["was_purchased"] is not None else None,
+                predicted_item_count=r.get("predicted_item_count"),
+                actual_item_count=r.get("actual_item_count"),
+                condition_at_sale=r.get("condition_at_sale"),
                 notes=r["notes"] or "",
             )
             for r in top

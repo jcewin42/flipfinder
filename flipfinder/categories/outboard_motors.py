@@ -62,6 +62,7 @@ class OutboardMotorProfile(CategoryProfile):
         price_min: int = 50,
         price_max: int = 6000,
         search_strategy: str = "broad",
+        image_count: int = 3,
     ):
         """
         search_strategy: "broad" runs one generic query ("outboard motor"),
@@ -80,6 +81,7 @@ class OutboardMotorProfile(CategoryProfile):
         self.price_min = price_min
         self.price_max = price_max
         self.search_strategy = search_strategy
+        self.image_count = image_count
 
     def search_specs(self) -> Sequence[SearchSpec]:
         if self.search_strategy == "thorough":
@@ -124,14 +126,28 @@ class OutboardMotorProfile(CategoryProfile):
         if similar_feedback:
             lines = []
             for fb in similar_feedback:
-                lines.append(
+                line = (
                     f"- Similar past listing (features: {fb.features}): "
                     f"predicted repair cost ${fb.predicted_repair_cost}, "
                     f"actual repair cost ${fb.actual_repair_cost}; "
                     f"predicted resale ${fb.predicted_resale_value}, "
                     f"actual resale ${fb.actual_resale_value}."
-                    + (f" Notes: {fb.notes}" if fb.notes else "")
                 )
+                if fb.actual_resale_value is not None:
+                    line += (
+                        f" Condition at sale: {fb.condition_at_sale}."
+                        if fb.condition_at_sale
+                        else " (condition at sale not recorded -- weight this comp cautiously, "
+                             "it may not have been fully serviced before resale)."
+                    )
+                if fb.actual_item_count is not None:
+                    line += (
+                        f" You were uncertain about the unit count and guessed "
+                        f"{fb.predicted_item_count}; it was actually {fb.actual_item_count}."
+                    )
+                if fb.notes:
+                    line += f" Notes: {fb.notes}"
+                lines.append(line)
             feedback_block = "\n".join(lines)
 
         market_block = "(not enough local sales history yet to calibrate against)"
@@ -164,6 +180,27 @@ your estimated_resale_value, estimated_repair_cost, and estimated_repair_hours s
 across ALL units combined, not just one -- and set estimated_item_count to how many you count.
 For an ordinary single-motor listing, estimated_item_count is 1.
 
+Report item_count_confidence separately from your overall confidence -- specifically how sure
+you are about the NUMBER of units, not the valuation. Lower it when: the wording is ambiguous
+("outboards" plural with no number given), photos suggest a different count than the text states,
+the listing is vague about what exactly is included, or you're genuinely guessing between two
+plausible counts. A listing can have high overall confidence in the price/condition assessment
+while still having low item_count_confidence if the unit count itself is unclear.
+
+If photos are attached, examine them and weigh what you see alongside the text -- don't just
+attach them as decoration:
+- Visible condition: corrosion, missing or damaged parts (prop, cowling, lower unit, fuel lines),
+  rust, cracked housings, overall wear. If photos show meaningfully better or worse condition than
+  the text description implies, trust the photos and adjust estimated_repair_cost/hours accordingly
+  -- sellers often under- or over-describe condition in the text.
+- Unit count: if multiple distinct motors are clearly visible together in the photos, that's
+  strong evidence for estimated_item_count and should raise your item_count_confidence. If photos
+  only show one angle, are blurry, or don't clearly resolve how many motors are present, keep
+  item_count_confidence appropriately low even if the text hints at multiple units.
+- If no usable photos were provided, or they don't show enough to judge condition/count
+  confidently, say so explicitly in reasoning and lower confidence/item_count_confidence
+  accordingly rather than guessing as if you'd seen clear photos.
+
 Local market timing:
 {market_block}
 
@@ -177,8 +214,9 @@ Respond with ONLY a JSON object, no other text:
   "estimated_repair_cost": <number, USD, TOTAL additional repair cost across all units beyond the standard service>,
   "estimated_repair_hours": <number, TOTAL additional labor hours across all units beyond the standard service>,
   "estimated_item_count": <integer, how many distinct outboard motors this listing includes -- 1 for an ordinary single-motor listing>,
+  "item_count_confidence": <number 0.0-1.0, how sure you are specifically about that count, separate from overall confidence>,
   "confidence": <number 0.0-1.0>,
-  "reasoning": "<one or two sentence explanation, noting the unit count if more than one>"
+  "reasoning": "<one or two sentence explanation, noting the unit count if more than one, and WHY if item_count_confidence is low>"
 }}"""
 
     def parse_valuation_response(self, raw_response: str) -> ValuationEstimate:
@@ -196,6 +234,7 @@ Respond with ONLY a JSON object, no other text:
                 confidence=float(data.get("confidence", 0.5)),
                 reasoning=str(data.get("reasoning", "")),
                 estimated_item_count=max(1, int(data.get("estimated_item_count", 1))),
+                item_count_confidence=min(1.0, max(0.0, float(data.get("item_count_confidence", 1.0)))),
                 raw_response=raw_response,
             )
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:

@@ -234,6 +234,38 @@ Some listings sell several motors at once -- an estate clear-out, a shop closing
 
 **What this does NOT do**: combine separate listings from different sellers into one hypothetical trip because they happen to be geographically close to each other. That's a meaningfully bigger feature (clustering active candidates, route planning, tracking a pending multi-stop trip across polls) and isn't built here -- if that turns out to be what you actually need on top of this, it's a different, separate piece of work.
 
+### Uncertain unit counts get checked with you, not guessed silently
+
+The AI reports a separate confidence specifically for the unit count (`item_count_confidence`), distinct from its overall valuation confidence -- a listing can be "clearly a Yamaha 40hp in good shape" (high confidence) while still being genuinely ambiguous about whether it's 1 or 3 motors (low item-count confidence).
+
+Below `item_count_confidence_threshold` (default 0.6), the listing gets alerted **regardless of what the hourly rate says** -- not just when it looks like a good deal. This matters: if the AI undercounts (guesses 1 when it's actually 3) and that undercounted version doesn't clear your rate threshold, the listing would otherwise never reach you at all, which is worse than one extra "not sure, can you check?" alert. The Discord embed for these is tagged distinctly (gold color, an explicit callout) so you know to double-check before trusting the numbers.
+
+Reply with the actual count once you know it (`"actually there's 2"`, or `/feedback actual_item_count:2`), the same reply-to-alert mechanism as cost/sale feedback. That correction gets stored and retrieved the exact same way as repair-cost/resale-value feedback (see "How the learning loop works") -- future ambiguous listings get "you were unsure about a similar one and guessed wrong" as context, which is the actual mechanism behind "improves over time," not a separate training step.
+
+### Condition at sale matters for feedback, not just the price
+
+`estimated_resale_value` always assumes the standard service (and any estimated extra repair) gets fully done before resale. If you sell something as-is, decide it's not worth fixing after a closer look, or sell it for parts instead, the resulting `actual_resale_value` is real data but under a **different** assumption than what was predicted -- treating it as directly comparable to a "fully serviced, running" sale would quietly corrupt future calibration.
+
+`condition_at_sale` captures this (free text, not a rigid enum -- e.g. `"serviced and running"`, `"as-is, not serviced"`, `"parts only"`). It's surfaced alongside every retrieved comp in the valuation prompt, so the AI can weight each one appropriately rather than averaging incompatible outcomes together. A few common phrasings parse casually from a reply (`"as-is, didn't service it"`, `"fully serviced and running"`, `"parts only"`, `"not running"`); anything more specific should go through `/feedback condition_at_sale:"..."` since natural-language condition descriptions are far more open-ended than a dollar amount or a count, and this parser is intentionally rough. If you leave it unrecorded, the prompt explicitly flags that comp as "weight cautiously" rather than presenting incomplete ground truth as reliable.
+
+### Feedback is one row per listing, not a growing pile of fragments
+
+Item count, repair cost, resale value, and condition typically arrive at different times (confirm the count today, log the repair cost next week, the sale price a month later). `record_feedback` is an upsert keyed on `(listing_id, source)` -- each new piece of information fills in that listing's one row rather than creating a new fragment, and existing values are never overwritten with nothing just because a later reply happened to omit them. This is what makes retrieval actually useful: one coherent comp per past listing instead of scattered partial rows that would otherwise dilute or duplicate in similarity search.
+
+**On keeping this integrated rather than a separate app**: the entire value of tracking sale price here is feeding calibration for this specific valuation system -- splitting it into a separate app/database would mean building a sync layer just to get the data back into the one place it's actually used, for no real benefit. Same reasoning as the single-database decision earlier: this is data belonging to the existing feedback loop, not a separate system. If what's actually wanted later is a nicer *interface* for entering/reviewing this (beyond Discord replies), that's a smaller, separate question about UX -- the SQLite file is already directly inspectable, and a lightweight review UI could sit on top of the same DB without needing separate storage.
+
+## How listing photos are used (and where they're deliberately not)
+
+Photos flow into stage 2 already -- `evaluate_listing` sends up to `image_count` (default 3, configurable per category) photos to the inference backend alongside the text prompt, and `jetson_service/server.py` base64-encodes and attaches them to the Ollama call. What actually matters is whether the prompt *directs* the model to use them for anything, not just whether they're attached -- so the outboard motor prompt explicitly asks the AI to weigh visible condition (corrosion, missing/damaged parts) against the text description, and to use the photos to help confirm or deny the unit count, lowering `item_count_confidence` when photos don't clearly resolve it.
+
+Two smaller changes: `image_count` is now a per-category config knob rather than hardcoded (more photos is better grounding but more Jetson inference cost/latency per listing -- the same tradeoff as everything else cost-related here), and Discord alerts now show the primary photo larger (`set_image` instead of a small thumbnail) plus up to 2 more as additional embeds in the same message, instead of one small thumbnail.
+
+**New, opt-in, and explicitly cautious**: `require_photo` rejects listings with no thumbnail at stage 1 -- a free, well-known spam/placeholder signal, since `thumbnail_url` comes back with every search result at zero extra cost. It defaults to `false` because this project has already been burned once by a SociaVault field that looked reliably populated in their docs but was null in practice (search-result `status`/`listed_at`). Watch stage 1 reject logs for false positives before turning this on for real.
+
+**Deliberately NOT changed, and why:**
+- **No vision in stage 1.** Stage 1's entire purpose is to be free/cheap so stage 2 (the actually expensive step) only runs on survivors. Running any image inference at stage 1 would erase that cost structure for every raw search hit, not just the ones worth valuing.
+- **No photos persisted into the feedback store for future few-shot comparison.** FB CDN photo URLs are likely to go stale by the time a comp would be retrieved weeks or months later, and attaching reference images from 3-5 past feedback entries to every single new valuation would meaningfully increase Jetson inference load on every call, not just the listing being evaluated. Text-based calibration ("predicted $X, actual $Y") already carries most of the useful signal without that cost.
+
 ## Adding a new category
 
 Say you're ready to add snowblowers. Create `flipfinder/categories/snowblowers.py`:
@@ -316,9 +348,12 @@ pip install pytest
 pytest tests/
 ```
 
-Covers offer/hourly-rate math (including peak/off-peak selection), stage 1
-filtering (including distance), feedback similarity ranking, scheduler
-timing, routing backends (including the Google->haversine fallback path),
-and the full lifecycle-tracking flow (registration, backoff scheduling,
-delisting, staleness) -- the parts of the system that don't require a live
-Discord bot, SociaVault key, Google Routes key, or Jetson to verify.
+Covers offer/hourly-rate math (including peak/off-peak selection and
+multi-unit scaling), stage 1 filtering (including distance), feedback
+similarity ranking and upsert semantics, scheduler timing, routing backends
+(including the Google->haversine fallback path), the full lifecycle-tracking
+flow (registration, backoff scheduling, delisting, staleness), reply parsing
+(cost/sale/item-count/condition, all discord.py-free for testability), and
+the alert-gating decision (including the item-count-uncertainty bypass) --
+the parts of the system that don't require a live Discord bot, SociaVault
+key, Google Routes key, or Jetson to verify.
