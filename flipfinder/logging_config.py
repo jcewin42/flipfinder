@@ -26,6 +26,7 @@ def setup_logging(log_dir: str = "logs", level: str = "INFO") -> None:
 
     file_handler = RotatingFileHandler(
         Path(log_dir) / "flipfinder.log", maxBytes=5 * 1024 * 1024, backupCount=5,
+        encoding="utf-8",
     )
     file_handler.setFormatter(fmt)
     root.addHandler(file_handler)

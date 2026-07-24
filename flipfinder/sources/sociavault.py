@@ -13,19 +13,27 @@ implemented here -- resolve your lat/lng once by hand (e.g. right-click your
 area on Google Maps -> "What's here?") and put it straight into config.yaml.
 It's not worth spending API credits on a lookup you only need once.
 
-The item detail endpoint's location field doesn't reliably include
-latitude/longitude (see SociaVault's docs sample), but the search endpoint's
-listing.location does. main.py backfills a detail's coordinates from its
-originating summary for that reason -- see merge_location_from_summary()
-in flipfinder/main.py.
+Confirmed via live testing against a real account (contradicts the
+published docs sample, and an earlier -- wrong -- assumption in this file):
+every response is wrapped in a {success, data: {...}, credits_used}
+envelope, and `data.listings`/`data.photos`/`data.attributes` are all dicts
+keyed by string index ("0", "1", ...), not JSON arrays. Also, it's the
+DETAIL endpoint whose location field reliably includes latitude/longitude
+-- search results never do (location there is just city/state/display
+name). main.py's merge_location_from_summary() is kept as a harmless
+no-op-in-practice safety net, not because it's still needed the way it was
+originally written.
 
 Delisting detection does NOT rely on search-result fields (status and
-listed_at are confirmed unreliable -- always null in testing despite being
-present in the schema) or on absence from search results (SociaVault only
-returns the first page or so of results per query, and FB's own ranking mixes
-in older "suggested" listings unpredictably, so "not in this page" doesn't
-mean "gone"). See check_still_active() for the approach actually used
-instead: periodic get_detail() rechecks via flipfinder/pipeline/market_stats.py.
+listed_at don't exist in the real response at all, despite being in
+SociaVault's published schema) or on absence from search results
+(SociaVault only returns the first page or so of results per query, and
+FB's own ranking mixes in older "suggested" listings unpredictably, so "not
+in this page" doesn't mean "gone"). See check_still_active() for the
+approach actually used instead: periodic get_detail() rechecks via
+flipfinder/pipeline/market_stats.py -- which can now lean on the real
+is_sold/is_live/is_hidden/is_pending booleans confirmed present on both
+search and detail responses, not just the 404 case.
 
 If SociaVault changes their response shape, this is the ONLY file that
 should need to change -- that's the point of the SourceAdapter boundary.
@@ -72,9 +80,10 @@ class SociaVaultSource(SourceAdapter):
     def search(self, spec: SearchSpec, cursor: Optional[str] = None) -> SearchResult:
         params = {
             "query": spec.query,
-            "latitude": spec.latitude,
-            "longitude": spec.longitude,
+            "lat": spec.latitude,
+            "lng": spec.longitude,
             "radius_km": spec.radius_km,
+            "sort_by": "creation_time_descend",
         }
         if spec.price_min is not None:
             params["price_min"] = spec.price_min
@@ -89,10 +98,15 @@ class SociaVaultSource(SourceAdapter):
             timeout=self.timeout,
         )
         resp.raise_for_status()
-        data = resp.json()
+        envelope = resp.json()
+        # Real response shape: {success, data: {success, credits_charged,
+        # listings, cursor, has_next_page}, credits_used}. `listings` itself
+        # is a dict keyed by string index ("0", "1", ...), not a JSON array --
+        # confirmed via live testing, differs from the published docs sample.
+        data = envelope.get("data") or {}
 
         listings = []
-        for item in data.get("listings", []):
+        for item in data.get("listings", {}).values():
             loc = item.get("location") or {}
             listings.append(
                 ListingSummary(
@@ -103,8 +117,8 @@ class SociaVaultSource(SourceAdapter):
                     price=(item.get("price") or {}).get("amount"),
                     url=item.get("url") or f"https://www.facebook.com/marketplace/item/{item['id']}",
                     thumbnail_url=(item.get("primary_photo") or {}).get("url"),
-                    posted_at=_parse_dt(item.get("listed_at")),
-                    latitude=loc.get("latitude"),
+                    posted_at=_parse_dt(item.get("creation_time")),   # null on search results in practice; see README
+                    latitude=loc.get("latitude"),   # location has no lat/lng at all in practice -- see README
                     longitude=loc.get("longitude"),
                     raw=item,
                 )
@@ -122,14 +136,17 @@ class SociaVaultSource(SourceAdapter):
             timeout=self.timeout,
         )
         resp.raise_for_status()
-        item = resp.json()
+        envelope = resp.json()
+        # Same {success, data: {...}, credits_used} envelope as search() --
+        # confirmed via live testing, item fields live under `data`.
+        item = envelope.get("data") or envelope
 
-        attributes = {a["label"]: a["value"] for a in item.get("attributes", [])}
+        attributes = {a["label"]: a["value"] for a in item.get("attributes", {}).values()}
         photos = [
             Photo(url=p["url"], width=p.get("width"), height=p.get("height"))
-            for p in item.get("photos", [])
+            for p in item.get("photos", {}).values()
         ]
-        loc = item.get("location", {})
+        loc = item.get("location") or {}
 
         return ListingDetail(
             id=str(item["id"]),
@@ -141,26 +158,23 @@ class SociaVaultSource(SourceAdapter):
             url=f"https://www.facebook.com/marketplace/item/{item['id']}",
             photos=photos,
             attributes=attributes,
-            seller=item.get("seller", {}),
+            seller=item.get("seller") or {},
             location=loc,
-            posted_at=_parse_dt(item.get("listed_at")),
-            latitude=loc.get("latitude"),   # usually absent on this endpoint; see module docstring
+            posted_at=_parse_dt(item.get("creation_time")),
+            latitude=loc.get("latitude"),   # reliable on this endpoint -- see module docstring
             longitude=loc.get("longitude"),
             raw=item,
         )
 
     def check_still_active(self, listing_id: str) -> Optional[bool]:
         """
-        NOTE: SociaVault's search-result fields for listing status and
-        posted-at date are unreliable (confirmed via testing -- always null
-        despite being present in the schema), so this can't just inspect
-        those fields. The one signal that's likely solid is the item
-        endpoint returning a 404/not-found once FB actually removes the
-        underlying listing -- that's what this leans on. It ALSO
-        speculatively checks a couple of plausible status-ish keys in case
-        SociaVault does expose one for a "sold" listing that still 200s;
-        verify against your own account's real responses and adjust the
-        candidate key list below if it doesn't match what you actually see.
+        Confirmed via live testing: the status/posted-at fields SociaVault's
+        published schema advertises on SEARCH results (status, listed_at)
+        don't exist there at all. The item DETAIL endpoint is different --
+        it reliably returns is_hidden/is_live/is_pending/is_sold booleans
+        (real fields, not a guess), on top of a 404 once FB fully removes
+        the listing. is_pending (sale in progress but not yet confirmed) is
+        deliberately not treated as inactive -- the listing is still up.
         """
         try:
             resp = self._session.get(
@@ -178,14 +192,15 @@ class SociaVaultSource(SourceAdapter):
 
         try:
             resp.raise_for_status()
-            item = resp.json()
+            envelope = resp.json()
         except (requests.RequestException, ValueError):
             return None
 
-        for key in ("status", "availability", "is_available", "sold"):
-            if key in item:
-                value = str(item[key]).lower()
-                if value in ("sold", "removed", "unavailable", "false", "0"):
-                    return False
+        item = envelope.get("data") or envelope
+
+        if item.get("is_sold") or item.get("is_hidden"):
+            return False
+        if item.get("is_live") is False:
+            return False
 
         return True

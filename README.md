@@ -207,6 +207,10 @@ SociaVault charges a credit per search call (regardless of how many results it r
 
 `cost_per_search_call`/`cost_per_detail_call` are both exposed in config so this is a visible, tunable tradeoff. Start broad; switch to thorough only if you notice you're missing listings you'd find by browsing manually.
 
+### Pagination: only fetched when we might actually be missing something
+
+Every search is sorted newest-first (`sort_by=creation_time_descend`). Normally only the first page is fetched -- but if the OLDEST listing on that page is still new (not seen in a prior poll), that's a sign more new listings might exist past the edge of the page (e.g. after downtime, or a burst of new listings between polls), so the next page gets fetched too, and so on until either a page's oldest listing is one we've already seen, or `max_search_pages` (default 3, per query per poll) is hit. Each extra page costs one more search credit, which is what the cap is for. If you see the `max_search_pages` warning in the logs regularly, it means polls are consistently behind -- worth raising the cap or polling more often rather than assuming it'll catch up on its own.
+
 ## How delisting detection actually works (and why it changed)
 
 An earlier version of this tried to infer "delisted" from a listing's absence in search results (if we stop seeing it in polls, it's probably gone). **That doesn't work on SociaVault** -- confirmed through testing:

@@ -43,26 +43,6 @@ def test_rejects_boat_and_motor_package():
     assert profile.quick_filter(_summary("14ft boat and motor package, Evinrude 25hp")) is False
 
 
-def test_passes_stage1_rejects_beyond_max_distance():
-    profile = _profile()
-    summary = _summary("Yamaha 40hp outboard, runs great")
-    assert passes_stage1(summary, profile, distance_km=150, max_distance_km=60) is False
-
-
-def test_passes_stage1_accepts_within_max_distance():
-    profile = _profile()
-    summary = _summary("Yamaha 40hp outboard, runs great")
-    assert passes_stage1(summary, profile, distance_km=20, max_distance_km=60) is True
-
-
-def test_passes_stage1_fails_open_when_distance_unknown():
-    profile = _profile()
-    summary = _summary("Yamaha 40hp outboard, runs great")
-    # No coordinates available for this listing -- don't silently drop a
-    # possibly-good listing just because distance couldn't be computed.
-    assert passes_stage1(summary, profile, distance_km=None, max_distance_km=60) is True
-
-
 def test_passes_stage1_ignores_photo_by_default():
     profile = _profile()
     summary = _summary("Yamaha 40hp outboard, runs great")

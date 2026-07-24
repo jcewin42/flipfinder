@@ -22,11 +22,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import sys
 from datetime import datetime
 
 from dotenv import load_dotenv
 
-from flipfinder import geo
 from flipfinder.categories import build_category
 from flipfinder.config import load_config
 from flipfinder.db import Database
@@ -40,6 +40,16 @@ from flipfinder.pipeline.stage1_filter import passes_stage1
 from flipfinder.routing import build_routing_backend
 from flipfinder.scheduler import ScheduleConfig, Scheduler
 from flipfinder.sources import build_source
+
+# Real listing titles routinely contain non-ASCII characters (smart quotes,
+# en/em dashes, emoji). A headless host isn't guaranteed to have a UTF-8
+# locale (e.g. LANG=en_US rather than en_US.UTF-8 makes Python default
+# stdout/stderr to Latin-1) -- confirmed to actually crash a poll cycle on
+# this project's own Pi. Force UTF-8 regardless of host locale rather than
+# depending on systemd/shell environment setup to get this right.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 
 logger = logging.getLogger("flipfinder.main")
 
@@ -71,8 +81,8 @@ def build_app(config: dict):
             radius_km=location["radius_km"],
             base_service_cost=cat_cfg["base_service_cost"],
             base_service_hours=cat_cfg.get("base_service_hours", 1.5),
-            price_min=cat_cfg.get("price_min", 50),
-            price_max=cat_cfg.get("price_max", 6000),
+            price_min=cat_cfg.get("price_min"),
+            price_max=cat_cfg.get("price_max"),
             search_strategy=cat_cfg.get("search_strategy", "broad"),
             image_count=cat_cfg.get("image_count", 3),
         )
@@ -109,8 +119,8 @@ async def run_poll_cycle(
 
     min_hourly_rate = cat_cfg.get("alert_min_hourly_rate", 20.0)
     item_count_confidence_threshold = cat_cfg.get("item_count_confidence_threshold", 0.6)
-    max_distance_km = cat_cfg.get("max_distance_km", location.get("max_distance_km"))
     require_photo = cat_cfg.get("require_photo", False)
+    max_search_pages = cat_cfg.get("max_search_pages", 3)
     travel_time_basis = cat_cfg.get("travel_time_basis", config.get("routing", {}).get("travel_time_basis", "peak"))
     selling_overhead_hours = cat_cfg.get("selling_overhead_hours", 0.5)
 
@@ -131,22 +141,27 @@ async def run_poll_cycle(
     try:
         for spec in category.search_specs():
             cursor = None
+            pages_fetched = 0
             while True:
                 result = await asyncio.to_thread(source.search, spec, cursor)
+                pages_fetched += 1
                 counts["listings_seen"] += len(result.listings)
+
+                # Pages are sorted newest-first (sort_by=creation_time_descend).
+                # Capture whether the oldest listing on THIS page was already
+                # known BEFORE the loop below marks anything processed: if so,
+                # everything past it should already be known too, and paying
+                # for another page would be pure waste. If it's still new, we
+                # might be missing listings created since our last poll that
+                # didn't fit on this page -- worth fetching the next one.
+                caught_up = bool(result.listings) and db.has_processed(result.listings[-1].id, source.name)
 
                 for summary in result.listings:
                     if db.has_processed(summary.id, source.name):
                         continue
                     counts["new_listings"] += 1
 
-                    distance_km = None
-                    if summary.latitude is not None and summary.longitude is not None:
-                        distance_km = geo.haversine_km(
-                            location["latitude"], location["longitude"], summary.latitude, summary.longitude,
-                        )
-
-                    passed = passes_stage1(summary, category, distance_km, max_distance_km, require_photo)
+                    passed = passes_stage1(summary, category, require_photo)
                     db.mark_processed(
                         summary.id, source.name, category.category_id, summary.title,
                         summary.price, summary.url, passed,
@@ -213,9 +228,17 @@ async def run_poll_cycle(
                         await notifier.send_alert(detail, estimate, offer, needs_confirmation)
                         counts["alerts_sent"] += 1
 
-                cursor = result.next_cursor
-                if not cursor:
+                if caught_up or not result.listings or not result.next_cursor:
                     break
+                if pages_fetched >= max_search_pages:
+                    logger.warning(
+                        "%s/%s: hit max_search_pages=%d while still seeing only-new listings on "
+                        "the last page -- some listings newer than our last poll may be missed "
+                        "this cycle; raise max_search_pages if this happens often",
+                        category.category_id, spec.query, max_search_pages,
+                    )
+                    break
+                cursor = result.next_cursor
 
         if lifecycle_enabled:
             lifecycle_result = await asyncio.to_thread(

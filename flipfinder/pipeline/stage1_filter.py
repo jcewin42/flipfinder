@@ -8,10 +8,11 @@ Jetson inference time/thermal budget on listings that are obviously not
 worth a full valuation. That reasoning holds even with a free self-hosted
 monitor, so this stage stays in the architecture either way.
 
-Distance is checked here rather than in the category profile because it's
-generic across every category -- how far you're willing to drive doesn't
-depend on what you're flipping. Category-specific logic (keyword excludes,
-price sanity) stays in the category profile's quick_filter().
+No hard distance cutoff here -- the search radius passed to the source
+already scopes results, and beyond that, distance is priced into the
+$/hour math via travel time rather than filtered as a separate, item-value-
+blind cutoff. A far-away multi-unit lot can be worth the drive in a way a
+flat km limit can't tell apart from a far-away single cheap item.
 
 Photo presence is also checked here, generically, for the same reason: "no
 photo" is a well-known cheap signal for spam/placeholder listings, and
@@ -26,7 +27,6 @@ thumbnail_url turns out not to behave the way you'd expect.
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from flipfinder.categories.base import CategoryProfile
 from flipfinder.models import ListingSummary
@@ -37,17 +37,8 @@ logger = logging.getLogger("flipfinder.stage1")
 def passes_stage1(
     summary: ListingSummary,
     category: CategoryProfile,
-    distance_km: Optional[float] = None,
-    max_distance_km: Optional[float] = None,
     require_photo: bool = False,
 ) -> bool:
-    if distance_km is not None and max_distance_km is not None and distance_km > max_distance_km:
-        logger.debug(
-            "stage1 reject (distance): %s is %.0fkm away, max is %.0fkm",
-            summary.title, distance_km, max_distance_km,
-        )
-        return False
-
     if require_photo and not summary.thumbnail_url:
         logger.debug("stage1 reject (no photo): %s", summary.title)
         return False

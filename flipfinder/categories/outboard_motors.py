@@ -59,8 +59,8 @@ class OutboardMotorProfile(CategoryProfile):
         radius_km: float,
         base_service_cost: float,
         base_service_hours: float = 1.5,
-        price_min: int = 50,
-        price_max: int = 6000,
+        price_min: Optional[int] = None,
+        price_max: Optional[int] = None,
         search_strategy: str = "broad",
         image_count: int = 3,
     ):
@@ -109,7 +109,9 @@ class OutboardMotorProfile(CategoryProfile):
             return False
 
         if summary.price is not None:
-            if summary.price < self.price_min or summary.price > self.price_max:
+            if self.price_min is not None and summary.price < self.price_min:
+                return False
+            if self.price_max is not None and summary.price > self.price_max:
                 return False
 
         return True
