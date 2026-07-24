@@ -27,3 +27,17 @@ def test_item_count_confidence_exactly_at_threshold_does_not_bypass():
     # Only STRICTLY below the threshold counts as "uncertain".
     assert should_alert(hourly_rate=5, confidence=0.8, item_count_confidence=0.6,
                          min_hourly_rate=20, item_count_confidence_threshold=0.6) is False
+
+
+def test_none_threshold_alerts_on_everything_with_a_usable_valuation():
+    # min_hourly_rate=None is the "see everything while calibrating" mode --
+    # any usable valuation alerts regardless of rate, even a very low or
+    # negative one.
+    assert should_alert(hourly_rate=-50, confidence=0.8, item_count_confidence=0.9,
+                         min_hourly_rate=None, item_count_confidence_threshold=0.6) is True
+
+
+def test_none_threshold_still_respects_zero_confidence():
+    # The confidence gate still applies -- None only disables the rate bar.
+    assert should_alert(hourly_rate=100, confidence=0.0, item_count_confidence=0.9,
+                         min_hourly_rate=None, item_count_confidence_threshold=0.6) is False

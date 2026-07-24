@@ -4,8 +4,7 @@ Stage 2: full valuation.
 Only runs for listings that passed stage 1. Pulls similar past feedback and
 local time-on-market stats, builds the category-specific prompt, calls
 whichever inference backend is configured, and parses the result. None of
-this cares whether the backend is the Jetson or something else -- see
-inference/base.py.
+this cares which inference backend is configured -- see inference/base.py.
 """
 from __future__ import annotations
 

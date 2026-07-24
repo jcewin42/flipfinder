@@ -14,7 +14,7 @@ Source adapter (SociaVault, future: own monitor)
         |
 Scheduler (polls sources, logs every event)
         |
-Stage 1: quick filter (straight-line distance + cheap, source-agnostic screening)
+Stage 1: quick filter (cheap, source-agnostic screening -- keyword/price/photo, no distance cutoff)
         |
 Stage 2: valuation (detail fetch + AI estimate, uses category profile + inference backend)
         |         ^                                    ^
@@ -35,7 +35,7 @@ Four things are pluggable without touching the pipeline itself:
 
 - **Source** (`flipfinder/sources/`) -- where listings come from. SociaVault today.
 - **Category** (`flipfinder/categories/`) -- what you're flipping. Outboard motors today.
-- **Inference backend** (`flipfinder/inference/`) -- what answers "value this listing". The Jetson today.
+- **Inference backend** (`flipfinder/inference/`) -- what answers "value this listing". The Claude API today.
 - **Routing backend** (`flipfinder/routing/`) -- what answers "how long is the drive". Free straight-line estimate by default, real traffic-aware routing (Google Routes API) optionally.
 
 ## What each listing gets evaluated on
@@ -51,8 +51,6 @@ For every listing that passes stage 1, you get:
 
 ## Setup
 
-### Option A: plain venv
-
 ```bash
 cd flipfinder
 python3 -m venv venv
@@ -63,30 +61,17 @@ cp config.example.yaml config.yaml
 cp .env.example .env
 ```
 
-For always-on operation without Docker, see `deploy/flipfinder.service` (systemd unit -- copy to `/etc/systemd/system/`, adjust the user/paths, `systemctl enable --now flipfinder`).
+For always-on operation, see `deploy/flipfinder.service` (systemd unit -- copy to `/etc/systemd/system/`, adjust the user/paths, `systemctl enable --now flipfinder`).
 
-### Option B: Docker (Pi side only)
-
-```bash
-cd flipfinder
-cp config.example.yaml config.yaml
-cp .env.example .env
-docker compose up -d --build
-docker compose logs -f
-```
-
-`data/` and `logs/` are bind-mounted so they survive container rebuilds. `restart: unless-stopped` means it comes back up after a Pi reboot without a separate systemd unit.
-
-The Jetson side (`jetson_service/`) is NOT dockerized -- see "Jetson side" below for why.
-
-Either way, fill in `.env`:
+Fill in `.env`:
 ```
 DISCORD_BOT_TOKEN=...
 SOCIAVAULT_API_KEY=...
+ANTHROPIC_API_KEY=...       # for inference.backend: claude_api
 GOOGLE_ROUTES_API_KEY=...   # only needed if routing.backend: google_routes
 ```
 
-Get your SociaVault key at https://sociavault.com/signup (free tier: 100 requests/day -- note both search calls AND item-detail calls count against this, see "Tuning search cost" below).
+Get your SociaVault key at https://sociavault.com/signup (free tier: 100 requests/day -- note both search calls AND item-detail calls count against this, see "Tuning search cost" below). Get your Anthropic key at https://console.anthropic.com/settings/keys.
 
 Unresolved `${ENV_VAR}` placeholders only cause problems for whichever backend is actually selected in config.yaml -- an unset `GOOGLE_ROUTES_API_KEY` is harmless while `routing.backend: haversine` is selected, for instance. You'll get a warning in the logs either way.
 
@@ -94,9 +79,10 @@ Unresolved `${ENV_VAR}` placeholders only cause problems for whichever backend i
 
 1. Create an application + bot at https://discord.com/developers/applications
 2. Under **Bot**, enable the **Message Content Intent** (required -- this is how the bot reads your feedback replies)
-3. Invite it to your server with the `bot` and `applications.commands` scopes, and at minimum `Send Messages` / `Read Message History` permissions in the channel you want alerts in
+3. Invite it to your server with the `bot` and `applications.commands` scopes, and at minimum `Send Messages` / `Read Message History` permissions in every channel you want it posting to
 4. Copy the bot token into `.env`
 5. Right-click your alerts channel (Developer Mode must be on in Discord settings) -> Copy Channel ID -> put it in `config.yaml`'s `discord.channel_id`
+6. Optional: create a second channel for stage-1 rejects, same Copy Channel ID steps -> `discord.rejects_channel_id` (see "Seeing everything while you calibrate" below). Leave it unset if you don't want this.
 
 ### Location
 
@@ -141,20 +127,23 @@ Both delisting detection and paid routing already have config-level off switches
 
 `routing.log_comparison: true` logs haversine's estimate side by side with a real Google Routes call for every listing, regardless of which backend is actually driving decisions -- so you can build confidence in (or catch problems with) the free estimate before committing to it, or before deciding the paid API isn't worth it. This is scaffolding, not a permanent feature: delete `flipfinder/routing/temp_comparison_logger.py` and the `TEMP-COMPARISON`-tagged block in `main.py` once you've seen enough. It requires `routing.google_routes.api_key` to be set even if `routing.backend: haversine` is what's actually active, and it DOES cost real Google API calls (folded into `routing_calls_made`) the moment it's turned on -- it's not free just because it's diagnostic.
 
-### Jetson side
+### Inference: Claude API
 
-```bash
-# On the Jetson:
-pip install -r jetson_service/requirements.txt
-ollama pull llama3.2-vision   # or whatever vision-capable model you settle on
-uvicorn jetson_service.server:app --host 0.0.0.0 --port 8000
-```
+`inference.backend: claude_api` calls the Anthropic API directly from the Pi -- no second box needed, since the Pi already has internet access for SociaVault and Discord. Put your key in `.env` as `ANTHROPIC_API_KEY`, and pick a model in `config.yaml`'s `inference.claude_api.model` (default `claude-sonnet-5`, chosen deliberately for cost/latency at this call volume -- every stage-1 survivor, automatically -- not defaulted to Opus; roughly $0.01/listing on Haiku 4.5, $0.02-0.03/listing on Sonnet 5 for a typical prompt plus a few photos).
 
-Put the Jetson's LAN IP into `config.yaml`'s `inference.jetson.base_url`.
+An earlier version of this project planned to run a local vision model on a Jetson instead. That was dropped -- the Jetson available for this project turned out too weak for real local vision inference -- in favor of calling Claude directly. If local/self-hosted inference is worth revisiting later (cost, latency, or just wanting an offline option), `flipfinder/inference/base.py`'s `InferenceBackend` interface is what a new backend would implement; nothing else in the pipeline needs to change.
 
-This is intentionally NOT dockerized. Containerizing GPU-backed inference on Jetson's L4T means NVIDIA-specific base images and container runtime config -- real complexity that isn't worth taking on yet for a single-box hobby setup.
+**Before you've got a key wired up**, you can dry-run the whole pipeline with `inference.backend: mock` in config.yaml -- it returns a canned valuation so you can confirm scheduling, filtering, routing, and alerts all work end to end.
 
-**Before the Jetson is wired up**, you can dry-run the whole pipeline with `inference.backend: mock` in config.yaml -- it returns a canned valuation so you can confirm scheduling, filtering, routing, and alerts all work end to end.
+### Resilience: a failed valuation doesn't lose the listing
+
+If the inference call for one listing throws -- Claude API down, rate-limited, out of credits, a network blip -- that failure is caught per-listing rather than aborting the rest of the poll. The listing is deliberately left un-marked-processed, so the *next* poll picks it back up and retries it automatically, rather than it being silently lost forever. (Concretely: `db.mark_processed()` only fires after a listing is fully evaluated; a mid-evaluation exception skips it, so `has_processed()` still returns false for it next time.) Watch `logs/flipfinder.log` for "leaving unprocessed so the next poll retries it" if you want to confirm this is actually happening during an outage; the returned poll summary also includes an `evaluation_failures` count (not persisted to `poll_log` -- that table's schema is fixed -- but visible in the console/log output of each poll).
+
+### Seeing everything while you calibrate
+
+`alert_min_hourly_rate: null` (instead of a number) disables the alert threshold entirely -- every listing with a usable valuation gets sent, regardless of $/hour, so you can watch real results and decide where the bar should actually be before locking in a number. `should_alert()`'s confidence gate still applies (a totally-failed-to-parse valuation still doesn't alert). Set it back to a real number once you've seen enough.
+
+Stage-1 rejects (the much larger volume of listings that never even get valued) can go to a **separate** channel: `discord.rejects_channel_id`. One digest message per poll (title/price/link for each reject), not one message per listing -- stage 1 can reject dozens per poll, and a message-per-reject would spam/rate-limit fast. Leave it `null` to skip the digest (just logs a warning). Between this and the un-thresholded alerts channel, you can see the entire pipeline's output while calibrating, then mute either channel once you don't need that visibility anymore.
 
 ### Run it
 
@@ -264,15 +253,15 @@ Item count, repair cost, resale value, and condition typically arrive at differe
 
 ## How listing photos are used (and where they're deliberately not)
 
-Photos flow into stage 2 already -- `evaluate_listing` sends up to `image_count` (default 3, configurable per category) photos to the inference backend alongside the text prompt, and `jetson_service/server.py` base64-encodes and attaches them to the Ollama call. What actually matters is whether the prompt *directs* the model to use them for anything, not just whether they're attached -- so the outboard motor prompt explicitly asks the AI to weigh visible condition (corrosion, missing/damaged parts) against the text description, and to use the photos to help confirm or deny the unit count, lowering `item_count_confidence` when photos don't clearly resolve it.
+Photos flow into stage 2 already -- `evaluate_listing` sends up to `image_count` (default 3, configurable per category) photos to the inference backend alongside the text prompt; `flipfinder/inference/claude_backend.py` downloads and base64-encodes them as image content blocks in the Anthropic Messages API call. What actually matters is whether the prompt *directs* the model to use them for anything, not just whether they're attached -- so the outboard motor prompt explicitly asks the AI to weigh visible condition (corrosion, missing/damaged parts) against the text description, and to use the photos to help confirm or deny the unit count, lowering `item_count_confidence` when photos don't clearly resolve it.
 
-Two smaller changes: `image_count` is now a per-category config knob rather than hardcoded (more photos is better grounding but more Jetson inference cost/latency per listing -- the same tradeoff as everything else cost-related here), and Discord alerts now show the primary photo larger (`set_image` instead of a small thumbnail) plus up to 2 more as additional embeds in the same message, instead of one small thumbnail.
+Two smaller changes: `image_count` is now a per-category config knob rather than hardcoded (more photos is better grounding but more inference cost/latency per listing -- the same tradeoff as everything else cost-related here), and Discord alerts now show the primary photo larger (`set_image` instead of a small thumbnail) plus up to 2 more as additional embeds in the same message, instead of one small thumbnail.
 
 **New, opt-in, and explicitly cautious**: `require_photo` rejects listings with no thumbnail at stage 1 -- a free, well-known spam/placeholder signal, since `thumbnail_url` comes back with every search result at zero extra cost. It defaults to `false` because this project has already been burned once by a SociaVault field that looked reliably populated in their docs but was null in practice (search-result `status`/`listed_at`). Watch stage 1 reject logs for false positives before turning this on for real.
 
 **Deliberately NOT changed, and why:**
 - **No vision in stage 1.** Stage 1's entire purpose is to be free/cheap so stage 2 (the actually expensive step) only runs on survivors. Running any image inference at stage 1 would erase that cost structure for every raw search hit, not just the ones worth valuing.
-- **No photos persisted into the feedback store for future few-shot comparison.** FB CDN photo URLs are likely to go stale by the time a comp would be retrieved weeks or months later, and attaching reference images from 3-5 past feedback entries to every single new valuation would meaningfully increase Jetson inference load on every call, not just the listing being evaluated. Text-based calibration ("predicted $X, actual $Y") already carries most of the useful signal without that cost.
+- **No photos persisted into the feedback store for future few-shot comparison.** FB CDN photo URLs are likely to go stale by the time a comp would be retrieved weeks or months later, and attaching reference images from 3-5 past feedback entries to every single new valuation would meaningfully increase inference load on every call, not just the listing being evaluated. Text-based calibration ("predicted $X, actual $Y") already carries most of the useful signal without that cost.
 
 ## Adding a new category
 
@@ -334,7 +323,6 @@ browser while the app is running.
 
 - **The Discord bot is untested end-to-end** -- give it a real run
   (`--once --discord` is a good first test) before trusting it unattended.
-- **The Jetson service assumes Ollama** with a vision-capable model.
 - **SociaVault's exact response field names and behavior** were taken from
   their public API reference docs as of mid-2026, PLUS your own testing
   which already caught the status/listed_at fields being unreliable in
@@ -357,11 +345,12 @@ pytest tests/
 ```
 
 Covers offer/hourly-rate math (including peak/off-peak selection and
-multi-unit scaling), stage 1 filtering (including distance), feedback
-similarity ranking and upsert semantics, scheduler timing, routing backends
-(including the Google->haversine fallback path), the full lifecycle-tracking
-flow (registration, backoff scheduling, delisting, staleness), reply parsing
+multi-unit scaling), stage 1 filtering, feedback similarity ranking and
+upsert semantics, scheduler timing, routing backends (including the
+Google->haversine fallback path), the full lifecycle-tracking flow
+(registration, backoff scheduling, delisting, staleness), reply parsing
 (cost/sale/item-count/condition, all discord.py-free for testability), and
-the alert-gating decision (including the item-count-uncertainty bypass) --
-the parts of the system that don't require a live Discord bot, SociaVault
-key, Google Routes key, or Jetson to verify.
+the alert-gating decision (including the item-count-uncertainty bypass and
+the null-threshold "alert on everything" mode) -- the parts of the system
+that don't require a live Discord bot, SociaVault key, Google Routes key, or
+Anthropic key to verify.

@@ -108,6 +108,22 @@ class OutboardMotorProfile(CategoryProfile):
         if any(kw in title for kw in EXCLUDE_KEYWORDS):
             return False
 
+        # Positive relevance check. SociaVault's search results for a query
+        # like "outboard motor" routinely include unrelated "suggested"
+        # listings (see the delisting-detection notes in README on search
+        # ranking noise) that don't hit any EXCLUDE_KEYWORDS either -- confirmed
+        # live: things like "Chrome hearts hat" and "Vinyl LP's" passed stage 1
+        # and reached a paid Claude call before this check existed. Require
+        # some actual signal this is an outboard motor listing.
+        is_relevant = (
+            "outboard" in title
+            or "motor" in title
+            or HP_PATTERN.search(title)
+            or any(brand in title for brand in BRANDS)
+        )
+        if not is_relevant:
+            return False
+
         if summary.price is not None:
             if self.price_min is not None and summary.price < self.price_min:
                 return False

@@ -137,6 +137,8 @@ async def run_poll_cycle(
     lifecycle_result = {"checked": 0, "delisted": 0}
     routing_calls_made = 0
     error = None
+    rejects: list[dict] = []
+    evaluation_failures = 0
 
     try:
         for spec in category.search_specs():
@@ -162,71 +164,94 @@ async def run_poll_cycle(
                     counts["new_listings"] += 1
 
                     passed = passes_stage1(summary, category, require_photo)
-                    db.mark_processed(
-                        summary.id, source.name, category.category_id, summary.title,
-                        summary.price, summary.url, passed,
-                    )
                     if not passed:
+                        db.mark_processed(
+                            summary.id, source.name, category.category_id, summary.title,
+                            summary.price, summary.url, passed_stage1=False,
+                        )
+                        rejects.append({"title": summary.title, "price": summary.price, "url": summary.url})
                         continue
                     counts["passed_stage1"] += 1
 
-                    detail = await asyncio.to_thread(source.get_detail, summary.id, category.category_id)
-                    merge_location_from_summary(detail, summary)
-                    counts["detail_calls_made"] += 1
+                    # Deliberately NOT marked processed until stage 2 actually
+                    # succeeds below. If the inference backend (or anything
+                    # else in here) throws -- e.g. the Claude API being down,
+                    # rate-limited, or out of credits -- this listing is left
+                    # as "unseen," so the NEXT poll picks it back up and
+                    # retries it instead of it being silently lost forever.
+                    # Caught per-listing rather than left to the outer except
+                    # so one bad listing doesn't abort the rest of this
+                    # poll's batch (everything after it in result.listings
+                    # would otherwise never even get looked at this cycle).
+                    try:
+                        detail = await asyncio.to_thread(source.get_detail, summary.id, category.category_id)
+                        merge_location_from_summary(detail, summary)
+                        counts["detail_calls_made"] += 1
 
-                    estimate = evaluate_listing(detail, category, feedback_store, inference_backend, db)
+                        estimate = evaluate_listing(detail, category, feedback_store, inference_backend, db)
 
-                    travel = await asyncio.to_thread(
-                        routing_backend.estimate_round_trip,
-                        location["latitude"], location["longitude"], detail.latitude, detail.longitude,
-                    )
-                    routing_calls_made += travel.api_calls
-
-                    # TEMP-COMPARISON: delete this block + flipfinder/routing/temp_comparison_logger.py
-                    # once you've validated haversine accuracy against real Google Routes data.
-                    if config.get("routing", {}).get("log_comparison", False):
-                        from flipfinder.routing.temp_comparison_logger import log_comparison
-                        routing_calls_made += await asyncio.to_thread(
-                            log_comparison, config, detail.title,
+                        travel = await asyncio.to_thread(
+                            routing_backend.estimate_round_trip,
                             location["latitude"], location["longitude"], detail.latitude, detail.longitude,
                         )
+                        routing_calls_made += travel.api_calls
 
-                    offer = compute_offer(
-                        detail, estimate, category.base_service_cost, category.base_service_hours,
-                        travel, travel_time_basis, selling_overhead_hours,
-                        cat_cfg.get("min_profit_flat", 75.0), cat_cfg.get("min_profit_pct", 0.20),
-                    )
-                    features = category.feature_vector(detail)
-                    db.record_estimate(
-                        detail.id, source.name, category.category_id, features,
-                        estimate.estimated_resale_value, estimate.estimated_repair_cost,
-                        estimate.estimated_repair_hours, estimate.estimated_item_count,
-                        estimate.confidence, estimate.reasoning,
-                        estimate.raw_response, offer.max_offer, offer.pickup_travel_hours,
-                        offer.pickup_travel_hours_peak, offer.pickup_travel_hours_offpeak, offer.traffic_aware,
-                        offer.service_hours, offer.total_time_hours, offer.estimated_hourly_rate,
-                    )
+                        # TEMP-COMPARISON: delete this block + flipfinder/routing/temp_comparison_logger.py
+                        # once you've validated haversine accuracy against real Google Routes data.
+                        if config.get("routing", {}).get("log_comparison", False):
+                            from flipfinder.routing.temp_comparison_logger import log_comparison
+                            routing_calls_made += await asyncio.to_thread(
+                                log_comparison, config, detail.title,
+                                location["latitude"], location["longitude"], detail.latitude, detail.longitude,
+                            )
 
-                    if lifecycle_enabled:
-                        market_stats_mod.register_for_tracking(
-                            db, detail.id, source.name, category.category_id, detail.price,
-                            started_iso, lifecycle_first_check_delay,
+                        offer = compute_offer(
+                            detail, estimate, category.base_service_cost, category.base_service_hours,
+                            travel, travel_time_basis, selling_overhead_hours,
+                            cat_cfg.get("min_profit_flat", 75.0), cat_cfg.get("min_profit_pct", 0.20),
+                        )
+                        features = category.feature_vector(detail)
+                        db.record_estimate(
+                            detail.id, source.name, category.category_id, features,
+                            estimate.estimated_resale_value, estimate.estimated_repair_cost,
+                            estimate.estimated_repair_hours, estimate.estimated_item_count,
+                            estimate.confidence, estimate.reasoning,
+                            estimate.raw_response, offer.max_offer, offer.pickup_travel_hours,
+                            offer.pickup_travel_hours_peak, offer.pickup_travel_hours_offpeak, offer.traffic_aware,
+                            offer.service_hours, offer.total_time_hours, offer.estimated_hourly_rate,
                         )
 
-                    logger.info(
-                        "%s: resale=$%.0f repair=$%.0f/%.1fh rate=$%.0f/hr conf=%.0f%%%s",
-                        detail.title, estimate.estimated_resale_value, estimate.estimated_repair_cost,
-                        estimate.estimated_repair_hours, offer.estimated_hourly_rate, estimate.confidence * 100,
-                        f" [{estimate.estimated_item_count} units]" if estimate.estimated_item_count > 1 else "",
-                    )
+                        if lifecycle_enabled:
+                            market_stats_mod.register_for_tracking(
+                                db, detail.id, source.name, category.category_id, detail.price,
+                                started_iso, lifecycle_first_check_delay,
+                            )
 
-                    if should_alert(
-                        offer.estimated_hourly_rate, estimate.confidence, estimate.item_count_confidence,
-                        min_hourly_rate, item_count_confidence_threshold,
-                    ):
-                        needs_confirmation = estimate.item_count_confidence < item_count_confidence_threshold
-                        await notifier.send_alert(detail, estimate, offer, needs_confirmation)
-                        counts["alerts_sent"] += 1
+                        logger.info(
+                            "%s: resale=$%.0f repair=$%.0f/%.1fh rate=$%.0f/hr conf=%.0f%%%s",
+                            detail.title, estimate.estimated_resale_value, estimate.estimated_repair_cost,
+                            estimate.estimated_repair_hours, offer.estimated_hourly_rate, estimate.confidence * 100,
+                            f" [{estimate.estimated_item_count} units]" if estimate.estimated_item_count > 1 else "",
+                        )
+
+                        if should_alert(
+                            offer.estimated_hourly_rate, estimate.confidence, estimate.item_count_confidence,
+                            min_hourly_rate, item_count_confidence_threshold,
+                        ):
+                            needs_confirmation = estimate.item_count_confidence < item_count_confidence_threshold
+                            await notifier.send_alert(detail, estimate, offer, needs_confirmation)
+                            counts["alerts_sent"] += 1
+
+                        db.mark_processed(
+                            summary.id, source.name, category.category_id, summary.title,
+                            summary.price, summary.url, passed_stage1=True,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        evaluation_failures += 1
+                        logger.warning(
+                            "Failed to evaluate %s (id=%s): %s -- leaving unprocessed so the next poll retries it",
+                            summary.title, summary.id, exc,
+                        )
 
                 if caught_up or not result.listings or not result.next_cursor:
                     break
@@ -246,6 +271,8 @@ async def run_poll_cycle(
                 db, source, category.category_id, started_iso,
                 max_lifecycle_checks, lifecycle_backoff_days, lifecycle_max_tracking_days,
             )
+
+        await notifier.send_rejects_digest(category.category_id, rejects)
     except Exception as exc:  # noqa: BLE001
         error = str(exc)
         logger.exception("Poll cycle failed for %s", category_id)
@@ -263,14 +290,21 @@ async def run_poll_cycle(
             **counts,
         )
 
-    return {**counts, **{f"lifecycle_{k}": v for k, v in lifecycle_result.items()}}
+    return {
+        **counts,
+        "evaluation_failures": evaluation_failures,
+        **{f"lifecycle_{k}": v for k, v in lifecycle_result.items()},
+    }
 
 
 async def run_long_running(config: dict) -> None:
     from flipfinder.notifier.discord_bot import FlipFinderBot  # local import: only needed here
 
     db, feedback_store, inference_backend, routing_backend, sources, categories, schedules = build_app(config)
-    notifier = FlipFinderBot(db=db, feedback_store=feedback_store, channel_id=config["discord"]["channel_id"])
+    notifier = FlipFinderBot(
+        db=db, feedback_store=feedback_store, channel_id=config["discord"]["channel_id"],
+        rejects_channel_id=config["discord"].get("rejects_channel_id"),
+    )
 
     async def on_poll(category_id: str) -> dict:
         return await run_poll_cycle(
@@ -306,7 +340,10 @@ async def run_once(config: dict, category_ids: list[str], use_discord: bool) -> 
     if use_discord:
         from flipfinder.notifier.discord_bot import FlipFinderBot  # local import: only needed here
 
-        notifier = FlipFinderBot(db=db, feedback_store=feedback_store, channel_id=config["discord"]["channel_id"])
+        notifier = FlipFinderBot(
+            db=db, feedback_store=feedback_store, channel_id=config["discord"]["channel_id"],
+            rejects_channel_id=config["discord"].get("rejects_channel_id"),
+        )
 
         async def _run() -> None:
             await notifier.wait_until_ready()

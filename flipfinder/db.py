@@ -1,8 +1,8 @@
 """
 SQLite storage.
 
-One file, one source of truth, lives on the Pi. The Jetson stays stateless
-(see inference/jetson_client.py) so it's replaceable without any data
+One file, one source of truth, lives on the Pi. The inference backend stays
+stateless (see inference/base.py) so it's replaceable without any data
 migration. Every poll, every listing, every estimate, and every piece of
 user feedback gets logged -- that history is what future scheduling and
 learning improvements will be built on, so log generously even for things

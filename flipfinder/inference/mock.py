@@ -1,7 +1,7 @@
 """
 A canned-response backend. Useful for unit tests and for dry-running the
-whole pipeline (scheduler -> stage1 -> stage2 -> offer -> notify) before the
-Jetson is wired up or reachable.
+whole pipeline (scheduler -> stage1 -> stage2 -> offer -> notify) before a
+real inference backend (e.g. an Anthropic API key) is wired up.
 """
 from __future__ import annotations
 

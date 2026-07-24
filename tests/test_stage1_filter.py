@@ -43,6 +43,24 @@ def test_rejects_boat_and_motor_package():
     assert profile.quick_filter(_summary("14ft boat and motor package, Evinrude 25hp")) is False
 
 
+def test_rejects_irrelevant_listing_with_no_motor_signal():
+    # SociaVault's search results include unrelated "suggested" listings
+    # that don't hit any EXCLUDE_KEYWORDS -- confirmed live (Chrome Hearts
+    # hat, Vinyl LPs, a basketball chain net, a plain cooler all passed
+    # stage 1 before this positive-relevance check existed).
+    profile = _profile()
+    assert profile.quick_filter(_summary("Chrome hearts hat")) is False
+    assert profile.quick_filter(_summary("Vinyl LP's")) is False
+    assert profile.quick_filter(_summary("Cooler")) is False
+
+
+def test_accepts_listing_with_only_a_brand_name_and_hp():
+    # No "motor" or "outboard" in the title at all -- brand + HP alone
+    # should still count as relevant.
+    profile = _profile()
+    assert profile.quick_filter(_summary("Mercury 60hp, good condition")) is True
+
+
 def test_passes_stage1_ignores_photo_by_default():
     profile = _profile()
     summary = _summary("Yamaha 40hp outboard, runs great")

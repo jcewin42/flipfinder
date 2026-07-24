@@ -1,10 +1,10 @@
 """
 Prints alerts to stdout instead of Discord. Duck-types FlipFinderBot's
-send_alert() so main.py's one-shot/dry-run mode can exercise the whole
-pipeline (scheduler-free, single poll cycle) without needing a bot token,
-a Discord server, or network access to Discord at all -- useful for
-tuning stage 1 filters, category prompts, or offer math against real
-listings before trusting the live bot with them.
+send_alert()/send_rejects_digest() so main.py's one-shot/dry-run mode can
+exercise the whole pipeline (scheduler-free, single poll cycle) without
+needing a bot token, a Discord server, or network access to Discord at all
+-- useful for tuning stage 1 filters, category prompts, or offer math
+against real listings before trusting the live bot with them.
 """
 from __future__ import annotations
 
@@ -39,3 +39,13 @@ class ConsoleNotifier:
         print(f"  est. $/hour: ${offer.estimated_hourly_rate:,.0f}/hr   confidence: {estimate.confidence:.0%}")
         print(f"  reasoning: {estimate.reasoning}")
         print("=" * 70)
+
+    async def send_rejects_digest(self, category_id: str, rejects: list[dict]) -> None:
+        if not rejects:
+            return
+        print("-" * 70)
+        print(f"{category_id}: {len(rejects)} stage-1 reject(s) this poll")
+        for r in rejects:
+            price = f"${r['price']:,.0f}" if r.get("price") is not None else "n/a"
+            print(f"  - {r['title']}  ({price})  {r['url']}")
+        print("-" * 70)

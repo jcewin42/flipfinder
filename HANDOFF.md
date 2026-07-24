@@ -2,8 +2,8 @@
 
 Written at the point of moving from architecture/code (built here, in a
 chat session with no access to real devices or live services) to actually
-running this on your Pi + Jetson. Read this + README.md when picking the
-project back up in Claude Code.
+running this on your Pi. Read this + README.md when picking the project
+back up in Claude Code.
 
 ## Where this stands
 
@@ -13,7 +13,7 @@ project back up in Claude Code.
   but all pure-logic tests (offer math, filtering, parsing, DB behavior). No
   test here has ever talked to a real external service.
 - **Nothing has been run against a real SociaVault account, a real Discord
-  bot, a real Jetson/Ollama instance, or a real Google Routes key.**
+  bot, or a real Google Routes key.**
   Everything was built directly against published API docs and exercised
   with mocks. Closing that gap is the entire point of tonight.
 - Developed and tested in an x86_64 Linux sandbox, not ARM. Nothing in the
@@ -29,22 +29,18 @@ project back up in Claude Code.
    Content Intent** must be enabled in the Discord developer portal or
    reply-based feedback will silently never fire (no error, it just won't
    see your replies).
-3. **(Optional) Google Cloud project + Routes API key** -- only needed if
+3. **Anthropic API key** -- console.anthropic.com/settings/keys. Powers
+   real AI valuations via `inference.backend: claude_api` -- see "Phase 2"
+   below.
+4. **(Optional) Google Cloud project + Routes API key** -- only needed if
    you want real traffic-aware routing from day one. `routing.backend:
    haversine` works with zero setup and is the config default.
 
 ## Physical setup (the original tonight's-plan items)
 
-- **Pi**: headless OS, always-on, runs the app via Docker (`docker compose
-  up -d --build`) or venv + the new `deploy/flipfinder.service` systemd
-  unit (Docker existed before; the systemd path for a plain venv install
-  didn't, until this handoff -- use whichever you already lean toward).
-- **Jetson**: `ollama pull <a vision-capable model>` then `uvicorn
-  jetson_service.server:app --host 0.0.0.0 --port 8000`. Intentionally not
-  dockerized (see README for why).
-- **Network**: both on the same LAN via your switch. Give the Jetson a
-  DHCP reservation so `config.yaml`'s `inference.jetson.base_url` doesn't
-  go stale if it gets a different IP after a reboot.
+- **Pi**: headless OS, always-on, runs the app via venv + `deploy/flipfinder.service`
+  systemd unit (Docker was an option earlier in this project but was dropped --
+  running as a plain venv install was simpler for this setup).
 
 ## Recommended rollout order
 
@@ -69,14 +65,48 @@ mismatches specifically, not just crashes -- e.g. does `search()` actually
 return `location.latitude/longitude` the way the code expects, are prices
 structured the way `(item.get("price") or {}).get("amount")` assumes.
 
-**Phase 2 -- bring up the Jetson, real AI valuations, still console-only**
-`config.yaml`: `inference.backend: jetson`, correct `base_url`. Same
-`--once` command as Phase 1. Watch whether the model actually follows the
-photo-reasoning and item-count instructions in the prompt (see
-`categories/outboard_motors.py`'s prompt), not just whether it returns
-parseable JSON -- e.g. does `item_count_confidence` actually drop on a
-genuinely ambiguous listing, or does it always come back near 1.0
-regardless.
+**Phase 2 -- real AI valuations, still console-only**
+Originally planned around a Jetson running a local vision model. The Jetson
+actually available for this project turned out to be a 2019 Nano (Maxwell
+GPU, JetPack 4.5, 4GB shared RAM) -- too weak for that (Ollama's GPU builds
+only target JetPack 5/6, and 4GB isn't enough RAM for a real vision model
+regardless). Since the Pi already has internet access for SociaVault and
+Discord, there's no reason a second box needs to relay prompts to a model
+-- it just calls the Claude API directly instead. (A Jetson-fallback path
+was built and then deliberately scrapped again in this same session --
+decided it wasn't worth the complexity right now; if local/self-hosted
+inference is worth revisiting later, `flipfinder/inference/base.py`'s
+`InferenceBackend` interface is the extension point.)
+
+`config.yaml`: `inference.backend: claude_api`, `ANTHROPIC_API_KEY` set in
+`.env`. Same `--once` command as Phase 1:
+```
+python -m flipfinder.main --once --category outboard_motors
+```
+Watch whether the model actually follows the photo-reasoning and
+item-count instructions in the prompt (see `categories/outboard_motors.py`'s
+prompt), not just whether it returns parseable JSON -- e.g. does
+`item_count_confidence` actually drop on a genuinely ambiguous listing, or
+does it always come back near 1.0 regardless. (Already spot-checked once
+against a real listing during this rollout -- the model correctly reasoned
+about a "blown powerhead, like-new lower unit" parts motor from the
+description, not just a generic guess. Worth checking a few more,
+especially multi-unit and photo-driven cases.)
+
+**Resilience against Claude API outages/credit exhaustion** was added
+instead of a Jetson fallback: a failed valuation for one listing is caught
+per-listing (not left to abort the whole poll) and deliberately left
+unmarked-processed, so the next poll retries it automatically rather than
+losing it. See README's "Resilience: a failed valuation doesn't lose the
+listing." Not yet exercised against a real outage -- worth testing by
+temporarily pointing `claude_api.api_key` at something invalid for one
+poll and confirming the listing gets picked back up on the next one rather
+than vanishing.
+
+**Also new this session**: `alert_min_hourly_rate: null` (see everything
+while calibrating a real threshold) and `discord.rejects_channel_id` (a
+digest of stage-1 rejects to a separate channel) -- see README's "Seeing
+everything while you calibrate."
 
 **Phase 3 -- Discord, for the first time ever**
 ```
@@ -98,9 +128,9 @@ while first to see how far off haversine actually was before fully
 committing either way.
 
 **Phase 5 -- go live**
-Drop `--once`. Either `sudo systemctl enable --now flipfinder` or `docker
-compose up -d`. Let the scheduler run for real and start watching
-`poll_log` and `logs/flipfinder.log` over the following days.
+Drop `--once`. `sudo systemctl enable --now flipfinder`. Let the scheduler
+run for real and start watching `poll_log` and `logs/flipfinder.log` over
+the following days.
 
 ## Specific unverified assumptions worth watching first
 
@@ -119,13 +149,18 @@ system unattended:
 - `thumbnail_url` reliability for the `require_photo` stage-1 filter --
   defaults to `false` specifically because this is unverified; watch
   stage-1 reject logs before turning it on.
-- Whether the Jetson's vision model actually uses attached photos as
-  directed, or just returns numbers without visibly having looked at
-  them -- worth spot-checking `reasoning` text against a few listings
-  where the photos clearly show something the description doesn't
-  mention.
+- Whether Claude actually uses attached photos as directed, or just
+  returns numbers without visibly having looked at them -- spot-checked
+  once during Phase 2 (correctly reasoned about condition specifics not
+  obviously implied by the title alone), worth checking a few more,
+  especially multi-unit and photo-vs-description-mismatch cases.
+- The per-listing retry-on-failure logic (see Phase 2) -- built, but never
+  exercised against a real Claude API failure. Worth a deliberate test
+  (temporarily invalid `claude_api.api_key` for one poll) before trusting
+  it unattended.
 - The entire Discord bot -- every code path in `notifier/discord_bot.py`
-  is new and has zero live testing behind it.
+  is new and has zero live testing behind it. This now includes the
+  rejects-channel digest, also untested end-to-end.
 
 ## Suggested opening for the Claude Code session
 

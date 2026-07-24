@@ -35,7 +35,7 @@ class CategoryProfile(ABC):
     base_service_cost: float
     base_service_hours: float   # fixed labor time for your standard service, mirrors base_service_cost
     image_count: int = 3         # how many photos to send to the inference backend per valuation --
-                                   # more context per listing vs. more Jetson inference cost/latency
+                                   # more context per listing vs. more inference cost/latency
 
     @abstractmethod
     def search_specs(self) -> Sequence[SearchSpec]:
@@ -55,8 +55,8 @@ class CategoryProfile(ABC):
         """
         Cheap, source-agnostic stage 1 check. Return True if this listing is
         worth a full detail fetch + AI valuation. This is the filter that
-        keeps you from burning API calls / Jetson inference time on listings
-        that are obviously irrelevant (wrong item, parts-only, price outlier).
+        keeps you from burning API calls / inference cost on listings that
+        are obviously irrelevant (wrong item, parts-only, price outlier).
         Distance-based rejection is handled generically in
         pipeline/stage1_filter.py, not here.
         """

@@ -4,9 +4,9 @@ Stage 1: cheap, source-agnostic screening.
 This exists regardless of which source is active. The original two-stage
 design was framed around avoiding SociaVault's per-call cost specifically --
 but the real reason to filter early is to avoid spending EITHER API money OR
-Jetson inference time/thermal budget on listings that are obviously not
-worth a full valuation. That reasoning holds even with a free self-hosted
-monitor, so this stage stays in the architecture either way.
+inference cost/latency on listings that are obviously not worth a full
+valuation. That reasoning holds even with a free self-hosted monitor, so
+this stage stays in the architecture either way.
 
 No hard distance cutoff here -- the search radius passed to the source
 already scopes results, and beyond that, distance is priced into the

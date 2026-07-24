@@ -4,11 +4,20 @@ database:
 discord:
   bot_token: "${DISCORD_BOT_TOKEN}"
   channel_id: 1530006907073331211   # right-click the channel in Discord (dev mode on) -> Copy Channel ID
+  rejects_channel_id: null   # optional. Stage-1 rejects go here as one digest message per poll
+                              # (title/price/link) -- lets you eyeball whether stage 1 is being too
+                              # aggressive without spamming the main alerts channel. Leave null to
+                              # just skip the digest (logs a warning instead).
 
 inference:
-  backend: "jetson"   # "jetson" for the real thing, "mock" to dry-run the pipeline without it
-  jetson:
-    base_url: "http://192.168.1.216:8000"   # Jetson's LAN IP + jetson_service port
+  backend: "claude_api"   # "claude_api" (calls Anthropic directly) or "mock" to dry-run the pipeline
+  claude_api:
+    api_key: "${ANTHROPIC_API_KEY}"
+    model: "claude-sonnet-5"   # chosen deliberately for cost/latency at this call volume (every
+                                 # stage-1 survivor, automatically) -- not defaulting to Opus. Roughly
+                                 # $0.01/listing on Haiku 4.5, $0.02-0.03/listing on Sonnet 5 for a
+                                 # typical prompt + a few photos -- cheap at stage-1-survivor volume.
+    timeout: 120   # multi-image vision requests can run longer than a text-only call
   mock: {}
 
 # Real, traffic-aware routing (Google Routes API) or the free straight-line
@@ -69,13 +78,16 @@ categories:
     # price_min: 50        # optional -- omit/comment out to disable price filtering entirely
     # price_max: 6000
     image_count: 3                 # photos sent to the inference backend per valuation --
-                                     # more context vs. more Jetson inference cost/latency
+                                     # more context vs. more inference cost/latency
     require_photo: false            # reject listings with no thumbnail at stage 1 (free check, but
                                      # UNVERIFIED against real SociaVault behavior -- watch stage1
                                      # reject logs before trusting this; easy to flip back off
     min_profit_flat: 75           # floor profit target in $
     min_profit_pct: 0.20          # or 20% of resale value, whichever is bigger
-    alert_min_hourly_rate: 20     # $/hour -- only alert above this
+    alert_min_hourly_rate: 20     # $/hour -- only alert above this. Set to null instead to see EVERY
+                                     # listing with a usable valuation regardless of rate -- useful
+                                     # temporarily while you're calibrating what a real threshold
+                                     # should be against actual local listings.
     item_count_confidence_threshold: 0.6   # below this, always alert regardless of hourly rate --
                                              # an uncertain unit count could be hiding a much better deal
     # travel_time_basis: "peak"   # per-category override of the global routing.travel_time_basis

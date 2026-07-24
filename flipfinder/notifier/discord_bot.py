@@ -104,13 +104,20 @@ def build_extra_photo_embeds(detail: ListingDetail, max_extra: int = 2) -> list[
 
 
 class FlipFinderBot(commands.Bot):
-    def __init__(self, db: Database, feedback_store: FeedbackStore, channel_id: int, **kwargs):
+    def __init__(
+        self, db: Database, feedback_store: FeedbackStore, channel_id: int,
+        rejects_channel_id: Optional[int] = None, **kwargs,
+    ):
         intents = discord.Intents.default()
         intents.message_content = True
         super().__init__(command_prefix="!", intents=intents, **kwargs)
         self.db = db
         self.feedback_store = feedback_store
         self.channel_id = channel_id
+        # Optional -- stage-1 rejects digest goes here if set (see
+        # config.yaml's discord.rejects_channel_id), otherwise
+        # send_rejects_digest() just logs a warning and does nothing.
+        self.rejects_channel_id = rejects_channel_id
 
     async def setup_hook(self) -> None:
         self.tree.add_command(feedback_command)
@@ -201,6 +208,42 @@ class FlipFinderBot(commands.Bot):
         extra_embeds = build_extra_photo_embeds(detail)
         message = await channel.send(embeds=[embed, *extra_embeds])
         self.db.record_discord_alert(str(message.id), detail.id, detail.source)
+
+    async def send_rejects_digest(self, category_id: str, rejects: list[dict]) -> None:
+        """One message per poll listing every stage-1 reject (title/price/
+        link), rather than a message per reject -- stage 1 can reject dozens
+        per poll, and Discord will rate-limit (or just get spammy) at that
+        volume. Skimmable digest instead, for eyeballing whether stage 1 is
+        being too aggressive."""
+        if not rejects:
+            return
+        if self.rejects_channel_id is None:
+            logger.warning(
+                "%d stage-1 reject(s) for %s this poll, but discord.rejects_channel_id isn't "
+                "configured -- skipping the digest",
+                len(rejects), category_id,
+            )
+            return
+
+        channel = self.get_channel(self.rejects_channel_id) or await self.fetch_channel(self.rejects_channel_id)
+
+        # Discord embed descriptions cap at 4096 chars -- truncate the list
+        # rather than failing the send if a poll rejects an unusually large
+        # batch (e.g. after downtime).
+        max_shown = 40
+        lines = [
+            f"[{r['title'][:100]}]({r['url']}) -- " + (f"${r['price']:,.0f}" if r.get("price") is not None else "n/a")
+            for r in rejects[:max_shown]
+        ]
+        if len(rejects) > max_shown:
+            lines.append(f"... and {len(rejects) - max_shown} more")
+
+        embed = discord.Embed(
+            title=f"{category_id}: {len(rejects)} stage-1 reject(s) this poll",
+            description="\n".join(lines)[:4096],
+            color=discord.Color.light_grey(),
+        )
+        await channel.send(embed=embed)
 
 
 @app_commands.command(name="feedback", description="Log actual outcome data for a listing")

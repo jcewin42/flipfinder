@@ -2,9 +2,8 @@
 Inference backend interface.
 
 The pipeline asks "evaluate this prompt (optionally with images)" without
-caring whether that's answered by your Jetson running a local model, a cloud
-API, or (in tests) a canned response. Swap backends by changing config, not
-code.
+caring whether that's answered by a cloud API, a local model, or (in tests)
+a canned response. Swap backends by changing config, not code.
 """
 from __future__ import annotations
 
